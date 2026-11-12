@@ -1,0 +1,163 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>MiniForth</title>
+<style>
+body{font-family:monospace;margin:16px;}
+#console{border:1px solid #888;height:40vh;overflow-y:auto;padding:10px;white-space:pre-wrap;background:#f9f9f9;font-size:15px;}
+#bar{display:flex;gap:8px;margin-top:8px;}
+#input{flex:1;padding:10px;font-family:monospace;font-size:16px;}
+#btn{padding:10px 16px;font-family:monospace;font-size:16px;}
+#stack,#primitives,#words{margin-top:8px;padding:8px 10px;font-size:14px;overflow-x:auto;white-space:nowrap;border:1px solid #bbc;}
+#stack{background:#eef3f7;}
+#primitives{background:#f7edf0;}
+#words{background:#edf7ee;}
+</style>
+</head>
+<body>
+<h3>MiniForth</h3>
+<div id="console"></div>
+<div id="bar">
+<input id="input" type="text" autocomplete="off" autocapitalize="off" autocorrect="off" spellcheck="false" placeholder="ex: 10 20 + .">
+<button id="btn" type="button">Executa</button>
+</div>
+<div id="stack">Pila (0): [buida]</div>
+<div id="primitives">Primitives: + nand drop 0= @ ! sp@ emit . key key? ms branch ?branch</div>
+<div id="words">Paraules Creades: [cap]</div>
+<script>
+const MEMSIZE=8000;
+let mem=new Int32Array(MEMSIZE),sp=0,code=[],words=[],keyBuffer=[],compiling=false,currentWord=null,keyResolver=null;
+const con=document.getElementById("console"),inp=document.getElementById("input"),btn=document.getElementById("btn"),stk=document.getElementById("stack"),wrdList=document.getElementById("words");
+
+function out(t){con.textContent+=t;con.scrollTop=con.scrollHeight;}
+function prompt(){out("ok> ");}
+function updateStack(){
+  if(sp===0){stk.textContent="Pila (0): [buida]";return;}
+  let items=[];
+  for(let i=0;i<sp;i++)items.push(mem[i]);
+  stk.textContent="Pila ("+sp+"): "+items.join(" ")+" <-top";
+}
+function updateWordsList(){
+  if(words.length===0){wrdList.textContent="Paraules Creades: [cap]";return;}
+  let names=words.map(w=>w.name);
+  wrdList.textContent="Paraules Creades: "+names.join(" ");
+}
+function push(x){if(sp>=MEMSIZE)throw"stack overflow";mem[sp++]=x|0;}
+function pop(){if(sp<=0)throw"stack underflow";return mem[--sp];}
+function isNumber(t){return/^-?\d+$/.test(t);}
+function findWord(n){for(let i=0;i<words.length;i++)if(words[i].name===n)return i;return -1;}
+
+async function primitive(tok,ctx){
+  let a,b,addr,flag;
+  if(isNumber(tok)){push(parseInt(tok,10));return;}
+  switch(tok){
+    case"+":b=pop();a=pop();push(a+b);return;
+    case"nand":b=pop();a=pop();push(~(a&b));return;
+    case"drop":pop();return;
+    case"0=":a=pop();push(a===0?-1:0);return;
+    case"@":addr=pop();if(addr<0||addr>=MEMSIZE)throw"bad address";push(mem[addr]);return;
+    case"!":addr=pop();a=pop();if(addr<0||addr>=MEMSIZE)throw"bad address";mem[addr]=a;return;
+    case"sp@":push(sp-1);return;
+    case"emit":out(String.fromCharCode(pop()&255));return;
+    case".":out(pop()+" ");return;
+    case"key":
+      if(keyBuffer.length===0&&inp.value.length===0){
+        await new Promise(r=>keyResolver=r);
+      }
+      if(keyBuffer.length>0){
+        push(keyBuffer.shift());
+      }else{
+        let c=inp.value.charCodeAt(0);
+        inp.value=inp.value.slice(1);
+        push(c);
+      }
+      return;
+    case"key?":push((keyBuffer.length>0||inp.value.length>0)?-1:0);return;
+    case"ms":await new Promise(r=>setTimeout(r,pop()));return;
+    case"branch":addr=pop();if(!ctx)throw"branch outside definition";ctx.ip=ctx.start+addr;return;
+    case"?branch":addr=pop();flag=pop();if(!ctx)throw"?branch outside definition";if(flag===0)ctx.ip=ctx.start+addr;return;
+  }
+  let w=findWord(tok);
+  if(w>=0){await executeWord(w);return;}
+  throw"unknown word: "+tok;
+}
+
+async function executeWord(idx){
+  let word=words[idx],ctx={start:word.start,end:word.start+word.count,ip:word.start};
+  while(ctx.ip<ctx.end){
+    let old=ctx.ip;
+    await primitive(code[ctx.ip],ctx);
+    if(old===ctx.ip)ctx.ip++;
+    await new Promise(r=>setTimeout(r,30));
+  }
+}
+
+async function interpret(line){
+  let clean=line.replace(/\u00A0/g," ");
+  clean=clean.replace(/\(\s[^\)]*\)/g," ");
+  let idx=clean.indexOf("\\");
+  if(idx>=0)clean=clean.substring(0,idx);
+  clean=clean.trim();
+  if(clean==="")return;
+  let tokens=clean.split(/\s+/);
+  for(let i=0;i<tokens.length;i++){
+    let tok=tokens[i];
+    if(!compiling){
+      if(tok===":"){
+        i++;
+        if(i>=tokens.length)throw"missing name";
+        currentWord={name:tokens[i],start:code.length,count:0};
+        compiling=true;
+        continue;
+      }
+      await primitive(tok,null);
+      continue;
+    }
+    if(tok===";"){
+      words.push(currentWord);
+      compiling=false;
+      currentWord=null;
+      continue;
+    }
+    code.push(tok);
+    currentWord.count++;
+  }
+}
+
+async function executar(){
+  let line=inp.value;
+  if(keyResolver){
+    for(let i=0;i<line.length;i++)keyBuffer.push(line.charCodeAt(i));
+    keyBuffer.push(13);
+    inp.value="";
+    let res=keyResolver;
+    keyResolver=null;
+    res();
+    return;
+  }
+  inp.value="";
+  out(line+"\n");
+  try{await interpret(line);}catch(e){out("ERROR: "+e+"\n");}
+  inp.value="";
+  updateStack();
+  updateWordsList();
+  if(!keyResolver)prompt();
+  inp.focus();
+}
+
+btn.onclick=executar;
+inp.oninput=function(){
+  if(keyResolver&&inp.value.length>0){
+    let res=keyResolver;
+    keyResolver=null;
+    res();
+  }
+};
+inp.onkeydown=function(e){if(e.key==="Enter"||e.keyCode===13){e.preventDefault();executar();}};
+out("MiniForth\n\n");
+prompt();
+</script>
+</body>
+</html>
