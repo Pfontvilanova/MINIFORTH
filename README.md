@@ -1,7 +1,7 @@
 # MINIFORTH
 A 14 words forth in html-java. 
 You can add a bootstrap to make a pure forth model.
-you can define words with : and ;
+you can define words with : and ; The memory ( and stack) starts at 0. and finish at 8000.
 
 ?branch and branch make an absolute jump, ex:
 
