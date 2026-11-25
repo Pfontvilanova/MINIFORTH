@@ -3,7 +3,7 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
-<title>MiniForth</title>
+<title>MiniForth Fast</title>
 <style>
 body{font-family:monospace;margin:16px;}
 #console{border:1px solid #888;height:40vh;overflow-y:auto;padding:10px;white-space:pre-wrap;background:#f9f9f9;font-size:15px;}
@@ -26,138 +26,315 @@ body{font-family:monospace;margin:16px;}
 <div id="stack">Pila (0): [buida]</div>
 <div id="primitives">Primitives: + nand drop 0= @ ! sp@ emit . key key? ms branch ?branch</div>
 <div id="words">Paraules Creades: [cap]</div>
+
 <script>
-const MEMSIZE=8000;
-let mem=new Int32Array(MEMSIZE),sp=0,code=[],words=[],keyBuffer=[],compiling=false,currentWord=null,keyResolver=null;
-const con=document.getElementById("console"),inp=document.getElementById("input"),btn=document.getElementById("btn"),stk=document.getElementById("stack"),wrdList=document.getElementById("words");
+const MEMSIZE = 8000;
+const mem = new Int32Array(MEMSIZE);
+let sp = 0;
 
-function out(t){con.textContent+=t;con.scrollTop=con.scrollHeight;}
-function prompt(){out("ok> ");}
-function updateStack(){
-  if(sp===0){stk.textContent="Pila (0): [buida]";return;}
-  let items=[];
-  for(let i=0;i<sp;i++)items.push(mem[i]);
-  stk.textContent="Pila ("+sp+"): "+items.join(" ")+" <-top";
-}
-function updateWordsList(){
-  if(words.length===0){wrdList.textContent="Paraules Creades: [cap]";return;}
-  let names=words.map(w=>w.name);
-  wrdList.textContent="Paraules Creades: "+names.join(" ");
-}
-function push(x){if(sp>=MEMSIZE)throw"stack overflow";mem[sp++]=x|0;}
-function pop(){if(sp<=0)throw"stack underflow";return mem[--sp];}
-function isNumber(t){return/^-?\d+$/.test(t);}
-function findWord(n){for(let i=0;i<words.length;i++)if(words[i].name===n)return i;return -1;}
+let keyBuffer = [];
+let compiling = false;
+let waitingName = false;
+let currentWord = null;
+let keyResolver = null;
+let outBuffer = "";
 
-async function primitive(tok,ctx){
-  let a,b,addr,flag;
-  if(isNumber(tok)){push(parseInt(tok,10));return;}
-  switch(tok){
-    case"+":b=pop();a=pop();push(a+b);return;
-    case"nand":b=pop();a=pop();push(~(a&b));return;
-    case"drop":pop();return;
-    case"0=":a=pop();push(a===0?-1:0);return;
-    case"@":addr=pop();if(addr<0||addr>=MEMSIZE)throw"bad address";push(mem[addr]);return;
-    case"!":addr=pop();a=pop();if(addr<0||addr>=MEMSIZE)throw"bad address";mem[addr]=a;return;
-    case"sp@":push(sp-1);return;
-    case"emit":out(String.fromCharCode(pop()&255));return;
-    case".":out(pop()+" ");return;
-    case"key":
-      if(keyBuffer.length===0&&inp.value.length===0){
-        await new Promise(r=>keyResolver=r);
-      }
-      if(keyBuffer.length>0){
-        push(keyBuffer.shift());
-      }else{
-        let c=inp.value.charCodeAt(0);
-        inp.value=inp.value.slice(1);
-        push(c);
-      }
-      return;
-    case"key?":push((keyBuffer.length>0||inp.value.length>0)?-1:0);return;
-    case"ms":await new Promise(r=>setTimeout(r,pop()));return;
-    case"branch":addr=pop();if(!ctx)throw"branch outside definition";ctx.ip=ctx.start+addr;return;
-    case"?branch":addr=pop();flag=pop();if(!ctx)throw"?branch outside definition";if(flag===0)ctx.ip=ctx.start+addr;return;
-  }
-  let w=findWord(tok);
-  if(w>=0){await executeWord(w);return;}
-  throw"unknown word: "+tok;
-}
+const OP_LIT     = 0;
+const OP_ADD     = 1;
+const OP_NAND    = 2;
+const OP_DROP    = 3;
+const OP_ZEQ     = 4;
+const OP_FETCH   = 5;
+const OP_STORE   = 6;
+const OP_SPFETCH = 7;
+const OP_EMIT    = 8;
+const OP_DOT     = 9;
+const OP_KEY     = 10;
+const OP_KEYQ    = 11;
+const OP_MS      = 12;
+const OP_BRANCH  = 13;
+const OP_QBRANCH = 14;
+const OP_CALL    = 15;
 
-async function executeWord(idx){
-  let word=words[idx],ctx={start:word.start,end:word.start+word.count,ip:word.start};
-  while(ctx.ip<ctx.end){
-    let old=ctx.ip;
-    await primitive(code[ctx.ip],ctx);
-    if(old===ctx.ip)ctx.ip++;
-    await new Promise(r=>setTimeout(r,30));
+const PRIM_MAP = {
+  "+": OP_ADD, "nand": OP_NAND, "drop": OP_DROP, "0=": OP_ZEQ,
+  "@": OP_FETCH, "!": OP_STORE, "sp@": OP_SPFETCH, "emit": OP_EMIT,
+  ".": OP_DOT, "key": OP_KEY, "key?": OP_KEYQ, "ms": OP_MS,
+  "branch": OP_BRANCH, "?branch": OP_QBRANCH
+};
+
+let codeOp = [];
+let codeVal = [];
+let words = [];
+let wordMap = new Map();
+
+const con = document.getElementById("console");
+const inp = document.getElementById("input");
+const btn = document.getElementById("btn");
+const stk = document.getElementById("stack");
+const wrdList = document.getElementById("words");
+
+function flushOut() {
+  if (outBuffer.length > 0) {
+    // HTML text does not render a bare CR like the Enter echo of a terminal.
+    // Normalize only the displayed text, without changing EMIT or the VM.
+    con.textContent += outBuffer.replace(/\r\n?/g, "\n");
+    outBuffer = "";
+    con.scrollTop = con.scrollHeight;
   }
 }
 
-async function interpret(line){
-  let clean=line.replace(/\u00A0/g," ");
-  clean=clean.replace(/\(\s[^\)]*\)/g," ");
-  let idx=clean.indexOf("\\");
-  if(idx>=0)clean=clean.substring(0,idx);
-  clean=clean.trim();
-  if(clean==="")return;
-  let tokens=clean.split(/\s+/);
-  for(let i=0;i<tokens.length;i++){
-    let tok=tokens[i];
-    if(!compiling){
-      if(tok===":"){
-        i++;
-        if(i>=tokens.length)throw"missing name";
-        currentWord={name:tokens[i],start:code.length,count:0};
-        compiling=true;
+function out(t) {
+  outBuffer += t;
+  if (t.indexOf("\n") !== -1) flushOut();
+}
+
+function prompt() {
+  out(compiling ? "... " : "ok> ");
+  flushOut();
+}
+
+function updateStack() {
+  if (sp === 0) {
+    stk.textContent = "Pila (0): [buida]";
+    return;
+  }
+  let items = new Array(sp);
+  for (let i = 0; i < sp; i++) items[i] = mem[i];
+  stk.textContent = "Pila (" + sp + "): " + items.join(" ") + " <-top";
+}
+
+function updateWordsList() {
+  if (words.length === 0) {
+    wrdList.textContent = "Paraules Creades: [cap]";
+    return;
+  }
+  wrdList.textContent = "Paraules Creades: " + words.map(w => w.name).join(" ");
+}
+
+function push(x) {
+  if (sp >= MEMSIZE) throw "stack overflow";
+  mem[sp++] = x | 0;
+}
+
+function pop() {
+  if (sp <= 0) throw "stack underflow";
+  return mem[--sp];
+}
+
+function compileToken(tok) {
+  if (/^-?\d+$/.test(tok)) {
+    return { op: OP_LIT, val: parseInt(tok, 10) | 0 };
+  }
+  if (PRIM_MAP[tok] !== undefined) {
+    return { op: PRIM_MAP[tok], val: 0 };
+  }
+  if (currentWord && currentWord.name === tok) {
+    return { op: OP_CALL, val: words.length };
+  }
+  let wIdx = wordMap.get(tok);
+  if (wIdx !== undefined) {
+    return { op: OP_CALL, val: wIdx };
+  }
+  throw "unknown word: " + tok;
+}
+
+async function runCompiled(start, end) {
+  let ip = start;
+  let a, b, addr, flag;
+
+  while (ip < end) {
+    let op = codeOp[ip];
+    let val = codeVal[ip];
+    ip++;
+
+    switch (op) {
+      case OP_LIT:
+        if (sp >= MEMSIZE) throw "stack overflow";
+        mem[sp++] = val;
+        break;
+      case OP_ADD:
+        b = pop(); a = pop(); push(a + b);
+        break;
+      case OP_NAND:
+        b = pop(); a = pop(); push(~(a & b));
+        break;
+      case OP_DROP:
+        pop();
+        break;
+      case OP_ZEQ:
+        a = pop(); push(a === 0 ? -1 : 0);
+        break;
+      case OP_FETCH:
+        addr = pop();
+        if (addr < 0 || addr >= MEMSIZE) throw "bad address";
+        push(mem[addr]);
+        break;
+      case OP_STORE:
+        addr = pop(); a = pop();
+        if (addr < 0 || addr >= MEMSIZE) throw "bad address";
+        mem[addr] = a;
+        break;
+      case OP_SPFETCH:
+        push(sp - 1);
+        break;
+      case OP_EMIT:
+        out(String.fromCharCode(pop() & 255));
+        break;
+      case OP_DOT:
+        out(pop() + " ");
+        break;
+      case OP_KEY:
+        flushOut();
+        if (keyBuffer.length === 0 && inp.value.length === 0) {
+          await new Promise(r => keyResolver = r);
+        }
+        if (keyBuffer.length > 0) {
+          push(keyBuffer.shift());
+        } else {
+          let c = inp.value.charCodeAt(0);
+          inp.value = inp.value.slice(1);
+          push(c);
+        }
+        break;
+      case OP_KEYQ:
+        push((keyBuffer.length > 0 || inp.value.length > 0) ? -1 : 0);
+        break;
+      case OP_MS:
+        flushOut();
+        await new Promise(r => setTimeout(r, pop()));
+        break;
+      case OP_BRANCH:
+        addr = pop();
+        ip = start + addr;
+        break;
+      case OP_QBRANCH:
+        addr = pop(); flag = pop();
+        if (flag === 0) ip = start + addr;
+        break;
+      case OP_CALL:
+        let w = words[val];
+        await runCompiled(w.start, w.end);
+        break;
+    }
+  }
+}
+
+async function interpret(line) {
+  let clean = line.replace(/\u00A0/g, " ");
+  clean = clean.replace(/\(\s[^\)]*\)/g, " ");
+  let idx = clean.indexOf("\\");
+  if (idx >= 0) clean = clean.substring(0, idx);
+  clean = clean.trim();
+  if (clean === "") return;
+
+  let tokens = clean.split(/\s+/);
+  for (let i = 0; i < tokens.length; i++) {
+    let tok = tokens[i];
+
+    if (waitingName) {
+      currentWord = { name: tok, start: codeOp.length, end: 0 };
+      waitingName = false;
+      continue;
+    }
+
+    if (!compiling) {
+      if (tok === ":") {
+        compiling = true;
+        waitingName = true;
         continue;
       }
-      await primitive(tok,null);
+      if (tok === ";") {
+        throw "; outside definition";
+      }
+      let inst = compileToken(tok);
+      if (inst.op === OP_BRANCH || inst.op === OP_QBRANCH) {
+        throw tok + " outside definition";
+      }
+      let tmpStart = codeOp.length;
+      codeOp.push(inst.op);
+      codeVal.push(inst.val);
+      try {
+        await runCompiled(tmpStart, tmpStart + 1);
+      } finally {
+        codeOp.length = tmpStart;
+        codeVal.length = tmpStart;
+      }
       continue;
     }
-    if(tok===";"){
+
+    if (tok === ";") {
+      currentWord.end = codeOp.length;
+      let newIdx = words.length;
       words.push(currentWord);
-      compiling=false;
-      currentWord=null;
+      wordMap.set(currentWord.name, newIdx);
+      compiling = false;
+      currentWord = null;
       continue;
     }
-    code.push(tok);
-    currentWord.count++;
+
+    if (tok === ":") {
+      throw "nested : not allowed";
+    }
+
+    let inst = compileToken(tok);
+    codeOp.push(inst.op);
+    codeVal.push(inst.val);
   }
+  flushOut();
 }
 
-async function executar(){
-  let line=inp.value;
-  if(keyResolver){
-    for(let i=0;i<line.length;i++)keyBuffer.push(line.charCodeAt(i));
+async function executar() {
+  let line = inp.value;
+  if (keyResolver) {
+    for (let i = 0; i < line.length; i++) keyBuffer.push(line.charCodeAt(i));
     keyBuffer.push(13);
-    inp.value="";
-    let res=keyResolver;
-    keyResolver=null;
+    inp.value = "";
+    let res = keyResolver;
+    keyResolver = null;
     res();
     return;
   }
-  inp.value="";
-  out(line+"\n");
-  try{await interpret(line);}catch(e){out("ERROR: "+e+"\n");}
-  inp.value="";
+  inp.value = "";
+  out(line + "\n");
+  try {
+    await interpret(line);
+  } catch (e) {
+    if (currentWord) {
+      codeOp.length = currentWord.start;
+      codeVal.length = currentWord.start;
+    }
+    compiling = false;
+    waitingName = false;
+    currentWord = null;
+    out("ERROR: " + e + "\n");
+  }
+  flushOut();
+  inp.value = "";
   updateStack();
   updateWordsList();
-  if(!keyResolver)prompt();
+  if (!keyResolver) prompt();
   inp.focus();
 }
 
-btn.onclick=executar;
-inp.oninput=function(){
-  if(keyResolver&&inp.value.length>0){
-    let res=keyResolver;
-    keyResolver=null;
+btn.onclick = executar;
+inp.oninput = function() {
+  if (keyResolver && inp.value.length > 0) {
+    let res = keyResolver;
+    keyResolver = null;
     res();
   }
 };
-inp.onkeydown=function(e){if(e.key==="Enter"||e.keyCode===13){e.preventDefault();executar();}};
+inp.onkeydown = function(e) {
+  if (e.key === "Enter" || e.keyCode === 13) {
+    e.preventDefault();
+    executar();
+  }
+};
+
 out("MiniForth\n\n");
 prompt();
 </script>
+
 </body>
 </html>
