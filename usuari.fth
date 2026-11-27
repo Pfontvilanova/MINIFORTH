@@ -48,3 +48,71 @@ immediate
 : amb-immediate if deixa-dada 10 else 20 then ;
 0 amb-immediate .
 1 amb-immediate .
+create dada
+55 ,
+dada @ .
+
+: variable create 0 , ;
+variable comptador
+99 comptador !
+comptador @ .
+
+: constant create , does> @ ;
+42 constant resposta
+7 constant setmana
+resposta .
+setmana .
+
+: mes create , does> @ + ;
+10 mes mes10
+32 mes10 .
+
+: parell create , , does> dup @ swap 1 + @ + ;
+7 5 parell p
+p .
+: compte 3 for i . next ;
+compte
+: parella i . j . ;
+: graella 2 for 3 for parella next next ;
+graella
+: consulta 42 >r i . r> . ;
+: retorns 2 for consulta next ;
+retorns
+: buit 0 for i . j . next 7 . ;
+buit
+: aviat 3 for i . exit next 999 . ;
+: exterior 2 for aviat i . next ;
+exterior
+." Hola!" 10 emit
+s" Bon dia" type 10 emit
+
+: salutacio ." Hola, mon!" ;
+salutacio 10 emit
+
+: missatge s" cafè amb llet" ;
+missatge type 10 emit
+
+: tria if ." si" else ." no" then ;
+1 tria 10 emit
+0 tria 10 emit
+7 ' dup execute . .
+
+: doble dup + ;
+9 ' doble execute .
+see doble
+
+defer accio
+: saluda ." Hola!" ;
+' saluda is accio
+accio 10 emit
+
+: adeu ." Adeu!" ;
+: canvia ['] adeu is accio ;
+canvia
+accio 10 emit
+
+: unless postpone 0= postpone if ;
+immediate
+: tria unless 111 . else 222 . then ;
+0 tria
+1 tria
