@@ -30,6 +30,7 @@ Section 2 is built upon these initial words:
 The dictionary and internal variables are manually constructed, memory locations are defined, and the structure for words is established. A set of approximately 35–40 words—ranging from `dup`, `if`, `then`, and `begin` to `word` and `find`—is created; these are written in Forth but run on the Java engine. The `:` and `;` operators are also redefined to function within the Forth dictionary.
 Section 3:
 From the REPL onward, all words belong to the Forth dictionary, and both the internal and external interpreters operate in pure Forth. Additional words—such as `for`, `next`, `postpone`, `defer`, `create`, and `does>`—are added, allowing for unlimited expansion.
+The goal was to have a Forth written entirely in Forth, except for a core of 14 primitives written in JS.
 
 You can use MiniForth directly from your browser via this link:
 https://pfontvilanova.github.io/MINIFORTH
